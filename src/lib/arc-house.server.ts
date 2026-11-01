@@ -4,6 +4,7 @@ const TENANT_ID = "688b1c42d1f8bff20fcac7a4";
 const TOP_HASH = "2d82f2deed463451967903b5af2934902b3e637c971dd10e4364c91b19079dee";
 const PAGE = 100;
 const MAX_SKIP = 2000;
+const RANK_API = "https://house-rank.vercel.app/api/members";
 const TTL_MS = 10 * 60 * 1000;
 
 export type HouseBadge = { name: string; count: number };
@@ -68,8 +69,8 @@ type RawRow = {
 
 type CacheSlot = { at: number; board: HouseBoard };
 const globalRef = globalThis as typeof globalThis & {
-  __arcHouseBoardV4?: CacheSlot;
-  __arcHouseFlightV4?: Promise<HouseBoard>;
+  __arcHouseBoardV5?: CacheSlot;
+  __arcHouseFlightV5?: Promise<HouseBoard>;
 };
 
 function sign(url: string): Record<string, string> {
@@ -238,11 +239,82 @@ function toMember(row: RawRow, teams: Map<string, string[]>): HouseMember | null
   };
 }
 
+type RankRow = {
+  userId?: string;
+  name?: string;
+  headline?: string;
+  position?: string;
+  pictureUrl?: string | null;
+  location?: string;
+  company?: string | null;
+  points?: number;
+  badge?: string | null;
+  profileBadge?: { name?: string | null } | null;
+};
+
+function fromRank(row: RankRow, teams: Map<string, string[]>): HouseMember | null {
+  const name = row.name?.trim();
+  const userId = row.userId?.trim();
+  if (!name || !userId) return null;
+  const tierName = row.profileBadge?.name?.trim() || "";
+  const badgeName = row.badge?.trim() || "";
+  const badges: HouseBadge[] = [];
+  if (badgeName && badgeName.toLowerCase() !== "none") badges.push({ name: badgeName, count: 1 });
+  return {
+    rank: 0,
+    name,
+    headline: row.headline?.trim() || row.position?.trim() || "",
+    location: row.location?.trim() || "",
+    company: row.company?.trim() || "",
+    avatar: row.pictureUrl?.trim() || null,
+    points: row.points ?? 0,
+    tier: tierName && tierName.toLowerCase() !== "none" ? tierName : tierOf({ profileBadge: null }, badges),
+    team: teamRolesFor(name, teams),
+    profile: `https://community.arc.io/home/users/${userId}`,
+    badges,
+  };
+}
+
+async function fetchRankPage(offset: number): Promise<{ total: number; members: RankRow[] }> {
+  const url = `${RANK_API}?q=&tier=all&offset=${offset}&limit=100`;
+  const res = await fetch(url, { headers: { accept: "application/json", "user-agent": "Mozilla/5.0" } });
+  if (!res.ok) throw new Error(`Member directory returned ${res.status}`);
+  const json = (await res.json()) as { total?: number; members?: RankRow[] };
+  return { total: json.total ?? 0, members: json.members ?? [] };
+}
+
+async function loadRankDirectory(): Promise<RankRow[]> {
+  try {
+    const first = await fetchRankPage(0);
+    const rows = [...first.members];
+    const offsets: number[] = [];
+    for (let offset = PAGE; offset < first.total; offset += PAGE) offsets.push(offset);
+    const pages: RankRow[][] = [];
+    let cursor = 0;
+    await Promise.all(
+      Array.from({ length: 8 }, async () => {
+        while (cursor < offsets.length) {
+          const index = cursor++;
+          const offset = offsets[index];
+          if (offset === undefined) return;
+          pages[index] = (await fetchRankPage(offset)).members;
+        }
+      }),
+    );
+    for (const page of pages) rows.push(...(page ?? []));
+    return rows;
+  } catch {
+    return [];
+  }
+}
+
 async function loadBoard(): Promise<HouseBoard> {
   const skips: number[] = [];
   for (let skip = 0; skip <= MAX_SKIP; skip += PAGE) skips.push(skip);
   const pages: RawRow[][] = [];
   let cursor = 0;
+  const directoryPromise = loadRankDirectory();
+  const teamsPromise = loadTeamRoles();
   const workers = Array.from({ length: 6 }, async () => {
     while (cursor < skips.length) {
       const index = cursor++;
@@ -251,8 +323,9 @@ async function loadBoard(): Promise<HouseBoard> {
       pages[index] = await fetchPage(skip);
     }
   });
-  await Promise.all(workers);
-  const teams = await loadTeamRoles();
+  const [teams, directory] = await Promise.all([teamsPromise, directoryPromise, Promise.all(workers)]).then(
+    ([teamMap, rows]) => [teamMap, rows] as const,
+  );
 
   const seen = new Set<string>();
   const members: HouseMember[] = [];
@@ -266,6 +339,14 @@ async function loadBoard(): Promise<HouseBoard> {
       members.push(member);
     }
   }
+  for (const row of directory) {
+    const key = row.userId?.trim();
+    if (!key || seen.has(key)) continue;
+    const member = fromRank(row, teams);
+    if (!member) continue;
+    seen.add(key);
+    members.push(member);
+  }
   members.sort((a, b) => b.points - a.points || a.name.localeCompare(b.name));
   members.forEach((member, index) => {
     member.rank = index + 1;
@@ -273,25 +354,25 @@ async function loadBoard(): Promise<HouseBoard> {
   return {
     fetchedAt: new Date().toISOString(),
     members,
-    cap: MAX_SKIP + PAGE,
+    cap: members.length,
   };
 }
 
 export async function getBoard(fresh = false): Promise<HouseBoard> {
-  const cached = globalRef.__arcHouseBoardV4;
+  const cached = globalRef.__arcHouseBoardV5;
   if (!fresh && cached && Date.now() - cached.at < TTL_MS) return cached.board;
-  if (!fresh && globalRef.__arcHouseFlightV4) return globalRef.__arcHouseFlightV4;
+  if (!fresh && globalRef.__arcHouseFlightV5) return globalRef.__arcHouseFlightV5;
 
   const flight = loadBoard()
     .then((board) => {
-      globalRef.__arcHouseBoardV4 = { at: Date.now(), board };
-      globalRef.__arcHouseFlightV4 = undefined;
+      globalRef.__arcHouseBoardV5 = { at: Date.now(), board };
+      globalRef.__arcHouseFlightV5 = undefined;
       return board;
     })
     .catch((error) => {
-      globalRef.__arcHouseFlightV4 = undefined;
+      globalRef.__arcHouseFlightV5 = undefined;
       throw error;
     });
-  globalRef.__arcHouseFlightV4 = flight;
+  globalRef.__arcHouseFlightV5 = flight;
   return flight;
 }
