@@ -17,6 +17,7 @@ export type HouseMember = {
   avatar: string | null;
   points: number;
   tier: string | null;
+  team: string[];
   profile: string;
   badges: HouseBadge[];
 };
@@ -67,8 +68,8 @@ type RawRow = {
 
 type CacheSlot = { at: number; board: HouseBoard };
 const globalRef = globalThis as typeof globalThis & {
-  __arcHouseBoard?: CacheSlot;
-  __arcHouseFlight?: Promise<HouseBoard>;
+  __arcHouseBoardV4?: CacheSlot;
+  __arcHouseFlightV4?: Promise<HouseBoard>;
 };
 
 function sign(url: string): Record<string, string> {
@@ -127,14 +128,89 @@ function badgesOf(user: RawUser): HouseBadge[] {
     const name = row.countSource?.name?.trim();
     const count = row.count ?? 0;
     if (!name || count <= 0) continue;
-    if (/^architect tier/i.test(name)) continue;
     out.push({ name, count });
   }
   out.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
   return out;
 }
 
-function toMember(row: RawRow): HouseMember | null {
+function tierOf(user: RawUser, badges: HouseBadge[]): string | null {
+  const profile = user.profileBadge?.name?.trim();
+  if (profile) return profile;
+  const fromBadge = badges.find((badge) => /architect|tier/i.test(badge.name));
+  return fromBadge?.name ?? null;
+}
+
+function decodeText(value: string): string {
+  const amp = "&" + "amp;";
+  const lt = "&" + "lt;";
+  const gt = "&" + "gt;";
+  const quot = "&" + "quot;";
+  const apos = "&" + "apos;";
+  const num = "&" + "#39;";
+  let text = value;
+  for (let guard = 0; guard < 4; guard++) {
+    if (!text.includes(amp) && !text.includes(lt) && !text.includes(gt) && !text.includes(quot) && !text.includes(apos) && !text.includes(num)) break;
+    text = text.split(amp).join("&").split(lt).join("<").split(gt).join(">").split(quot).join('"').split(num).join("'").split(apos).join("'");
+  }
+  return text.trim();
+}
+
+function nameKeys(name: string): string[] {
+  const fold = (value: string) =>
+    value
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  const keys = new Set<string>();
+  const full = fold(name);
+  if (full) keys.add(full);
+  const nick = name.match(/\(([^)]+)\)/);
+  if (nick?.[1]) {
+    const folded = fold(nick[1]);
+    if (folded) keys.add(folded);
+  }
+  const base = fold(name.replace(/\([^)]*\)/g, " "));
+  if (base) keys.add(base);
+  return [...keys];
+}
+
+async function loadTeamRoles(): Promise<Map<string, string[]>> {
+  const map = new Map<string, string[]>();
+  try {
+    const res = await fetch("https://community.arc.io/pages/community-contributors", {
+      headers: { "user-agent": "Mozilla/5.0", accept: "text/html" },
+    });
+    if (!res.ok) return map;
+    const html = await res.text();
+    const names = [...html.matchAll(/class="ahc-name">([^<]+)/g)].map((match) => decodeText(match[1] ?? ""));
+    const roles = [...html.matchAll(/class="ahc-role">([^<]+)/g)].map((match) => decodeText(match[1] ?? ""));
+    names.forEach((name, index) => {
+      const role = roles[index];
+      if (!name || !role) return;
+      for (const key of nameKeys(name)) {
+        const list = map.get(key) ?? [];
+        if (!list.includes(role)) list.push(role);
+        map.set(key, list);
+      }
+    });
+  } catch {
+    return map;
+  }
+  return map;
+}
+
+function teamRolesFor(name: string, teams: Map<string, string[]>): string[] {
+  const roles = new Set<string>();
+  for (const key of nameKeys(name)) {
+    for (const role of teams.get(key) ?? []) roles.add(role);
+  }
+  return [...roles];
+}
+
+function toMember(row: RawRow, teams: Map<string, string[]>): HouseMember | null {
   const user = row.tenantUser;
   if (!user) return null;
   const name = user.displayName?.trim() || "Arc member";
@@ -146,6 +222,7 @@ function toMember(row: RawRow): HouseMember | null {
     : id
       ? `https://community.arc.io/home/users/${id}`
       : "https://community.arc.io/pages/community-contributors";
+  const badges = badgesOf(user);
   return {
     rank: 0,
     name,
@@ -154,9 +231,10 @@ function toMember(row: RawRow): HouseMember | null {
     company: user.company?.name?.trim() || "",
     avatar: user.pictureUrl?.trim() || null,
     points,
-    tier: user.profileBadge?.name?.trim() || null,
+    tier: tierOf(user, badges),
+    team: teamRolesFor(name, teams),
     profile,
-    badges: badgesOf(user),
+    badges,
   };
 }
 
@@ -174,12 +252,13 @@ async function loadBoard(): Promise<HouseBoard> {
     }
   });
   await Promise.all(workers);
+  const teams = await loadTeamRoles();
 
   const seen = new Set<string>();
   const members: HouseMember[] = [];
   for (const page of pages) {
     for (const row of page ?? []) {
-      const member = toMember(row);
+      const member = toMember(row, teams);
       if (!member) continue;
       const key = row.userId || row.tenantUser?.userId || member.profile;
       if (seen.has(key)) continue;
@@ -199,20 +278,20 @@ async function loadBoard(): Promise<HouseBoard> {
 }
 
 export async function getBoard(fresh = false): Promise<HouseBoard> {
-  const cached = globalRef.__arcHouseBoard;
+  const cached = globalRef.__arcHouseBoardV4;
   if (!fresh && cached && Date.now() - cached.at < TTL_MS) return cached.board;
-  if (!fresh && globalRef.__arcHouseFlight) return globalRef.__arcHouseFlight;
+  if (!fresh && globalRef.__arcHouseFlightV4) return globalRef.__arcHouseFlightV4;
 
   const flight = loadBoard()
     .then((board) => {
-      globalRef.__arcHouseBoard = { at: Date.now(), board };
-      globalRef.__arcHouseFlight = undefined;
+      globalRef.__arcHouseBoardV4 = { at: Date.now(), board };
+      globalRef.__arcHouseFlightV4 = undefined;
       return board;
     })
     .catch((error) => {
-      globalRef.__arcHouseFlight = undefined;
+      globalRef.__arcHouseFlightV4 = undefined;
       throw error;
     });
-  globalRef.__arcHouseFlight = flight;
+  globalRef.__arcHouseFlightV4 = flight;
   return flight;
 }

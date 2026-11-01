@@ -18,6 +18,7 @@ type Member = {
   avatar: string | null;
   points: number;
   tier: string | null;
+  team: string[];
   profile: string;
   badges: Badge[];
 };
@@ -552,15 +553,17 @@ function MemberRow({ member }: { member: Member }) {
           {member.tier ? (
             <span className="rounded-full border border-accent px-2 py-0.5 text-xs text-accent">{tierLabel(member.tier)}</span>
           ) : null}
-          {member.badges.slice(0, 4).map((item) => (
+          {(member.team ?? []).map((role) => (
+            <span key={role} className="rounded-full border border-line px-2 py-0.5 text-xs text-fg">
+              {role}
+            </span>
+          ))}
+          {member.badges.map((item) => (
             <span key={item.name} className="rounded-full bg-panel-2 px-2 py-0.5 text-xs text-fg">
               {item.name}
               {item.count > 1 ? ` ×${item.count}` : ""}
             </span>
           ))}
-          {member.badges.length > 4 ? (
-            <span className="text-xs text-muted">+{member.badges.length - 4}</span>
-          ) : null}
         </div>
       </div>
     </a>
