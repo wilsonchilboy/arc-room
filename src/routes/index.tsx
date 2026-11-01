@@ -56,6 +56,143 @@ function initials(name: string): string {
   return letters.join("") || "A";
 }
 
+const COUNTRY_FLAGS: [string, string][] = [
+  ["United Arab Emirates", "AE"],
+  ["United Kingdom", "GB"],
+  ["United States", "US"],
+  ["South Africa", "ZA"],
+  ["North Macedonia", "MK"],
+  ["Sri Lanka", "LK"],
+  ["New Zealand", "NZ"],
+  ["Saudi Arabia", "SA"],
+  ["Korea, South", "KR"],
+  ["Korea, North", "KP"],
+  ["Gambia, The", "GM"],
+  ["Congo (Kinshasa)", "CD"],
+  ["Congo (Brazzaville)", "CG"],
+  ["Nigeria", "NG"],
+  ["Vietnam", "VN"],
+  ["India", "IN"],
+  ["Turkey", "TR"],
+  ["Bangladesh", "BD"],
+  ["Indonesia", "ID"],
+  ["China", "CN"],
+  ["Brazil", "BR"],
+  ["Ukraine", "UA"],
+  ["Pakistan", "PK"],
+  ["Singapore", "SG"],
+  ["Germany", "DE"],
+  ["Japan", "JP"],
+  ["Russia", "RU"],
+  ["Thailand", "TH"],
+  ["France", "FR"],
+  ["Kenya", "KE"],
+  ["Netherlands", "NL"],
+  ["Philippines", "PH"],
+  ["Spain", "ES"],
+  ["Argentina", "AR"],
+  ["Algeria", "DZ"],
+  ["Poland", "PL"],
+  ["Portugal", "PT"],
+  ["Azerbaijan", "AZ"],
+  ["Egypt", "EG"],
+  ["Belgium", "BE"],
+  ["Australia", "AU"],
+  ["Ethiopia", "ET"],
+  ["Ghana", "GH"],
+  ["Romania", "RO"],
+  ["Italy", "IT"],
+  ["Malaysia", "MY"],
+  ["Kazakhstan", "KZ"],
+  ["Lithuania", "LT"],
+  ["Canada", "CA"],
+  ["Moldova", "MD"],
+  ["Mexico", "MX"],
+  ["Taiwan", "TW"],
+  ["Colombia", "CO"],
+  ["Nepal", "NP"],
+  ["Switzerland", "CH"],
+  ["Uganda", "UG"],
+  ["Finland", "FI"],
+  ["Rwanda", "RW"],
+  ["Bulgaria", "BG"],
+  ["Chile", "CL"],
+  ["Burundi", "BI"],
+  ["Tajikistan", "TJ"],
+  ["Kiribati", "KI"],
+  ["Tanzania", "TZ"],
+  ["Guatemala", "GT"],
+  ["Armenia", "AM"],
+  ["Morocco", "MA"],
+  ["Belarus", "BY"],
+  ["Hungary", "HU"],
+  ["Cyprus", "CY"],
+  ["Georgia", "GE"],
+  ["Aruba", "AW"],
+  ["Bolivia", "BO"],
+  ["Monaco", "MC"],
+  ["Laos", "LA"],
+  ["Czechia", "CZ"],
+  ["Estonia", "EE"],
+  ["Guinea", "GN"],
+  ["Venezuela", "VE"],
+  ["Serbia", "RS"],
+  ["Croatia", "HR"],
+  ["Ecuador", "EC"],
+  ["Yemen", "YE"],
+  ["Burma", "MM"],
+  ["Mozambique", "MZ"],
+  ["Iraq", "IQ"],
+  ["Cameroon", "CM"],
+  ["Liberia", "LR"],
+  ["Austria", "AT"],
+  ["Eritrea", "ER"],
+  ["Sudan", "SD"],
+  ["Latvia", "LV"],
+  ["Ireland", "IE"],
+  ["Mongolia", "MN"],
+];
+
+function countryFlag(iso: string): string {
+  return [...iso.toUpperCase()].map((char) => String.fromCodePoint(127397 + char.charCodeAt(0))).join("");
+}
+
+function placeWithFlag(value: string): string {
+  const text = value.trim();
+  if (!text) return text;
+  const match = COUNTRY_FLAGS.find(([name]) => text === name || text.endsWith(`, ${name}`));
+  if (!match) return text;
+  const [name, iso] = match;
+  const rest = text === name ? "" : text.slice(0, -(name.length + 2)).trim();
+  return rest ? `${rest} ${countryFlag(iso)}` : countryFlag(iso);
+}
+
+function countryCode(value: string): string {
+  const text = value.trim();
+  if (!text) return "";
+  const match = COUNTRY_FLAGS.find(([name]) => text === name || text.endsWith(`, ${name}`));
+  return match ? match[1] : "";
+}
+
+function CountryFlag({ code }: { code: string }) {
+  const [failed, setFailed] = useState(false);
+  if (!code) return null;
+  if (failed) {
+    return <span className="shrink-0 text-base leading-none">{countryFlag(code)}</span>;
+  }
+  return (
+    <img
+      src={`https://flagcdn.com/24x18/${code.toLowerCase()}.png`}
+      alt=""
+      width={20}
+      height={15}
+      loading="lazy"
+      className="h-[15px] w-5 shrink-0 rounded-[3px] object-cover"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 type Section = "board" | "points" | "badges" | "events";
 
 const SECTIONS: { id: Section; label: string }[] = [
@@ -400,10 +537,11 @@ function MemberRow({ member }: { member: Member }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="truncate text-base font-semibold text-fg">{member.name}</p>
-            <p className="truncate text-xs text-muted">
-              {[member.headline, member.location].filter(Boolean).join(" · ") || "Arc House member"}
+            <p className="flex min-w-0 items-center gap-2 text-base font-semibold text-fg">
+              <span className="truncate">{member.name}</span>
+              <CountryFlag code={countryCode(member.location)} />
             </p>
+            <p className="truncate text-xs text-muted">{member.headline || "Arc House member"}</p>
           </div>
           <div className="shrink-0 text-right">
             <p className="font-mono text-base text-accent">{member.points.toLocaleString()}</p>
@@ -708,7 +846,7 @@ function EventsPanel({
                 <ExternalLink className="mt-1 size-4 shrink-0 text-muted" aria-hidden="true" />
               </div>
               <p className="mt-2 text-xs text-muted">
-                {[event.dateLabel, event.when, event.place].filter(Boolean).join(" · ")}
+                {[event.dateLabel, event.when, placeWithFlag(event.place)].filter(Boolean).join(" · ")}
               </p>
             </a>
           </li>
